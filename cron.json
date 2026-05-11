@@ -2,17 +2,170 @@
   "version": 1,
   "jobs": [
     {
-      "id": "99ea38ae-d3af-4568-bbc5-970674b44fdf",
-      "name": "Напоминание - выключить плиту",
+      "id": "e2d23d3d-6d84-49e8-bcac-835bcd4c6e07",
+      "name": "Тест крона",
       "enabled": true,
-      "createdAtMs": 1747008000000,
-      "updatedAtMs": 1747008000000,
-      "schedule": { "kind": "at", "at": "2026-05-11T19:02:00.000Z" },
+      "createdAtMs": 1778534400000,
+      "updatedAtMs": 1778534400000,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 120000
+      },
       "sessionTarget": "isolated",
       "wakeMode": "now",
       "payload": {
         "kind": "agentTurn",
-        "message": "Напомни пользователю: ПОРА ВЫКЛЮЧИТЬ ПЛИТУ! Это важно для безопасности.",
+        "message": "Скажи текущее время и дату. Это тест cron задания.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {
+        "lastRunAtMs": 1778542962147,
+        "lastRunStatus": "ok",
+        "lastDurationMs": 14149,
+        "consecutiveErrors": 0,
+        "lastError": null
+      }
+    },
+    {
+      "id": "fd0a728c-d9c2-417e-bb4f-af4afdd98ebe",
+      "name": "Сообщить время 21:26",
+      "enabled": true,
+      "createdAtMs": 1778534324000,
+      "updatedAtMs": 1778534324000,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-05-11T21:26:00.000Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Скажи текущее время и дату.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {}
+    },
+    {
+      "id": "363d306d-895d-48c5-a099-2ab8dcf4157e",
+      "name": "Сообщить время через 2 мин",
+      "enabled": true,
+      "createdAtMs": 1778534923000,
+      "updatedAtMs": 1778534923000,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-05-11T21:28:43.159Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Скажи текущее время и дату. Это тест cron задания.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {}
+    },
+    {
+      "id": "055a9cb5-0ed0-4073-a1d7-fe11f76a1308",
+      "name": "Сообщить время через 5 мин",
+      "enabled": true,
+      "createdAtMs": 1778535173000,
+      "updatedAtMs": 1778535173000,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-05-11T21:32:53.712Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Скажи текущее время и дату. Это тест cron задания.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {}
+    },
+    {
+      "id": "e52cbc2d-4cf2-44ff-8e97-f64a1e35c7be",
+      "name": "Новое задание через 2 мин",
+      "enabled": true,
+      "createdAtMs": 1778542564000,
+      "updatedAtMs": 1778542564000,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-05-11T23:36:04.619Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Это тест cron задания. Скажи текущее время и дату.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {}
+    },
+    {
+      "id": "33ba6f8e-8bec-4216-bb82-5beb1874f1c6",
+      "name": "Задание через 4 мин",
+      "enabled": true,
+      "createdAtMs": 1778542774000,
+      "updatedAtMs": 1778542774000,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-05-11T23:39:34.835Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Скажи текущее время и дату. Это тест cron задания.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {}
+    },
+    {
+      "id": "5310bed4-59b6-4123-9c75-4843ed313c79",
+      "name": "Сообщить время в 23:39",
+      "enabled": true,
+      "createdAtMs": 1778542800000,
+      "updatedAtMs": 1778542800000,
+      "schedule": {
+        "kind": "at",
+        "at": "2026-05-11T23:39:00.000Z"
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Скажи текущее время и дату. Это тест cron задания.",
         "timeoutSeconds": 60
       },
       "delivery": {
