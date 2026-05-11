@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "99ea38ae-d3af-4568-bbc5-970674b44fdf",
+      "name": "Напоминание - выключить плиту",
+      "enabled": true,
+      "createdAtMs": 1747008000000,
+      "updatedAtMs": 1747008000000,
+      "schedule": { "kind": "at", "at": "2026-05-11T19:02:00.000Z" },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Напомни пользователю: ПОРА ВЫКЛЮЧИТЬ ПЛИТУ! Это важно для безопасности.",
+        "timeoutSeconds": 60
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "telegram",
+        "to": "382401183"
+      },
+      "state": {}
+    }
+  ]
+}

@@ -372,6 +372,370 @@ class QoderSessionManager {
 const qoderManager = new QoderSessionManager();
 
 // =============================================================================
+// Cron / Scheduled Jobs Manager
+// =============================================================================
+
+const CRON_FILE = path.join(__dirname, 'cron.json');
+const RUNS_DIR = path.join(__dirname, 'runs');
+if (!fs.existsSync(RUNS_DIR)) fs.mkdirSync(RUNS_DIR, { recursive: true });
+
+class CronManager {
+  constructor() {
+    this.timer = null;
+    this.running = false;
+    this.jobs = [];
+    this.bot = null; // set after bot creation
+    this.qoderManager = qoderManager;
+  }
+
+  loadJobs() {
+    try {
+      if (fs.existsSync(CRON_FILE)) {
+        const data = JSON.parse(fs.readFileSync(CRON_FILE, 'utf-8'));
+        this.jobs = data.jobs || [];
+      }
+    } catch (e) {
+      console.error('[cron] load error:', e.message);
+      this.jobs = [];
+    }
+  }
+
+  saveJobs() {
+    fs.writeFileSync(CRON_FILE, JSON.stringify({ version: 1, jobs: this.jobs }, null, 2));
+  }
+
+  appendRunLog(jobId, entry) {
+    const logPath = path.join(RUNS_DIR, `${jobId}.jsonl`);
+    fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
+  }
+
+  // Parse cron expression: minute hour day month dayOfWeek
+  // Returns next run time or null if not due
+  parseCronExpression(expr) {
+    const [min, hour, day, month, dow] = expr.trim().split(/\s+/);
+    const now = new Date();
+
+    function matchField(value, field, minVal, maxVal) {
+      if (field === '*') return true;
+      // Handle */N (every N)
+      if (field.startsWith('*/')) {
+        const step = parseInt(field.substring(2));
+        return (value - minVal) % step === 0;
+      }
+      // Handle ranges: 1-5
+      if (field.includes('-')) {
+        const [start, end] = field.split('-').map(Number);
+        return value >= start && value <= end;
+      }
+      // Handle lists: 1,3,5
+      if (field.includes(',')) {
+        return field.split(',').map(Number).includes(value);
+      }
+      return parseInt(field) === value;
+    }
+
+    if (!matchField(now.getMinutes(), min, 0, 59)) return null;
+    if (!matchField(now.getHours(), hour, 0, 23)) return null;
+    if (!matchField(now.getDate(), day, 1, 31)) return null;
+    if (!matchField(now.getMonth() + 1, month, 1, 12)) return null;
+    if (!matchField(now.getDay(), dow, 0, 6)) return null;
+    return now;
+  }
+
+  getNextRunTime(job) {
+    const schedule = job.schedule;
+    if (!schedule || !job.enabled) return null;
+
+    if (schedule.kind === 'at') {
+      const t = new Date(schedule.at).getTime();
+      return t > Date.now() ? t : null;
+    }
+
+    if (schedule.kind === 'every') {
+      const lastRun = job.state?.lastRunAtMs || 0;
+      return lastRun + schedule.everyMs;
+    }
+
+    if (schedule.kind === 'cron') {
+      // Find next due time by checking each minute for next hour
+      const now = Date.now();
+      for (let i = 0; i < 60; i++) {
+        const future = new Date(now + i * 60000);
+        const fakeNow = new Date(future.toISOString().replace(/\.\d+Z$/, ':00.000Z'));
+        const test = this.parseCronExpression(schedule.expr);
+        if (test) {
+          return test.getTime();
+        }
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  armTimer() {
+    if (this.timer) clearTimeout(this.timer);
+
+    const enabledJobs = this.jobs.filter(j => j.enabled);
+    if (enabledJobs.length === 0) {
+      console.log('[cron] no enabled jobs');
+      return;
+    }
+
+    let minDelay = Infinity;
+    const now = Date.now();
+
+    for (const job of enabledJobs) {
+      const nextRun = this.getNextRunTime(job);
+      if (!nextRun) continue;
+
+      const delay = nextRun - now;
+      if (delay < minDelay) minDelay = delay;
+    }
+
+    if (minDelay === Infinity) {
+      console.log('[cron] no upcoming runs');
+      return;
+    }
+
+    // Clamp: max 1 hour, min 1 second
+    minDelay = Math.max(1000, Math.min(minDelay, 3600000));
+
+    console.log(`[cron] next check in ${Math.round(minDelay / 1000)}s`);
+    this.timer = setTimeout(() => this.onTimer(), minDelay);
+  }
+
+  async onTimer() {
+    if (this.running) {
+      this.armTimer();
+      return;
+    }
+    this.running = true;
+
+    const now = Date.now();
+    const runnable = [];
+
+    for (const job of this.jobs) {
+      if (!job.enabled) continue;
+      const nextRun = this.getNextRunTime(job);
+      if (nextRun && nextRun <= now) {
+        runnable.push(job);
+      }
+    }
+
+    for (const job of runnable) {
+      await this.executeJob(job);
+    }
+
+    this.running = false;
+    this.armTimer();
+  }
+
+  async executeJob(job) {
+    const startTime = Date.now();
+    console.log(`[cron] executing job: ${job.name} (${job.id})`);
+
+    if (!job.state) job.state = {};
+    job.state.lastRunAtMs = startTime;
+
+    // Retry with exponential backoff (как OpenClaw)
+    const backoffMs = [30000, 60000, 300000]; // 30s, 1min, 5min
+    const maxAttempts = 1 + backoffMs.length; // 4 попытки всего
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const result = await this.runJobPayload(job);
+
+        // Success
+        const duration = Date.now() - startTime;
+        job.state.lastRunStatus = 'ok';
+        job.state.lastDurationMs = duration;
+        job.state.consecutiveErrors = 0;
+        job.state.lastError = null;
+
+        // Log run
+        this.appendRunLog(job.id, {
+          ts: Date.now(),
+          jobId: job.id,
+          action: 'finished',
+          status: 'ok',
+          attempts: attempt,
+          durationMs: duration,
+          nextRunAtMs: this.getNextRunTime(job),
+        });
+
+        // Deliver to Telegram if configured
+        if (job.delivery && job.delivery.mode === 'announce' && this.bot && result) {
+          const chatId = job.delivery.to || config.allowedUsers[0];
+          const summary = result.substring(0, 4000);
+          try {
+            await this.bot.sendMessage(chatId, `⏰ *${job.name}*\n\n\`\`\`\n${summary}\n\`\`\``, {
+              parse_mode: 'Markdown',
+            });
+          } catch (e) {
+            await this.bot.sendMessage(chatId, `⏰ ${job.name}\n\n${summary}`);
+          }
+        }
+
+        // Auto-delete one-shot jobs
+        if (job.deleteAfterRun && job.schedule.kind === 'at') {
+          job.enabled = false;
+          console.log(`[cron] job ${job.name} auto-deleted (one-shot)`);
+        }
+
+        this.saveJobs();
+        console.log(`[cron] job ${job.name} finished in ${duration}ms (attempt ${attempt}/${maxAttempts})`);
+        return;
+
+      } catch (err) {
+        lastError = err;
+        console.error(`[cron] job ${job.name} attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+
+        if (attempt < maxAttempts) {
+          const delay = backoffMs[attempt - 1];
+          console.log(`[cron] retrying in ${delay / 1000}s...`);
+          this.appendRunLog(job.id, {
+            ts: Date.now(),
+            jobId: job.id,
+            action: 'retry',
+            attempt,
+            error: err.message,
+            nextRetryInMs: delay,
+          });
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    // All attempts failed
+    const duration = Date.now() - startTime;
+    job.state.lastRunStatus = 'error';
+    job.state.lastError = lastError.message;
+    job.state.lastDurationMs = duration;
+    job.state.consecutiveErrors = (job.state.consecutiveErrors || 0) + 1;
+
+    this.appendRunLog(job.id, {
+      ts: Date.now(),
+      jobId: job.id,
+      action: 'failed',
+      status: 'error',
+      attempts: maxAttempts,
+      error: lastError.message,
+      durationMs: duration,
+    });
+
+    // Alert on consecutive errors
+    if (job.state.consecutiveErrors >= 2 && this.bot) {
+      const chatId = config.allowedUsers[0];
+      this.bot.sendMessage(chatId, `⚠️ Cron job "${job.name}" failed ${job.state.consecutiveErrors} раз подряд:\n${lastError.message}`);
+    }
+
+    this.saveJobs();
+    console.error(`[cron] job ${job.name} all ${maxAttempts} attempts failed`);
+  }
+
+  async runJobPayload(job) {
+    const payload = job.payload;
+    if (payload.kind === 'agentTurn') {
+      const message = payload.message || '';
+      return await this.qoderManager.run('cron_' + job.id, message, [], () => {});
+    }
+    throw new Error(`Unknown payload kind: ${payload.kind}`);
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  start(botRef) {
+    this.bot = botRef;
+    this.loadJobs();
+    console.log(`[cron] loaded ${this.jobs.length} jobs (${this.jobs.filter(j => j.enabled).length} enabled)`);
+    this.armTimer();
+
+    // Watch for changes to cron.json (Qoder may edit it)
+    fs.watchFile(CRON_FILE, (curr, prev) => {
+      if (curr.mtimeMs !== prev.mtimeMs) {
+        console.log('[cron] cron.json changed externally, reloading...');
+        this.loadJobs();
+        console.log(`[cron] reloaded ${this.jobs.length} jobs (${this.jobs.filter(j => j.enabled).length} enabled)`);
+        this.armTimer();
+      }
+    });
+  }
+
+  // Telegram commands helpers
+  addJob(name, scheduleKind, scheduleValue, message, userId) {
+    const job = {
+      id: require('crypto').randomUUID(),
+      name,
+      enabled: true,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      schedule: {},
+      sessionTarget: 'isolated',
+      wakeMode: 'now',
+      payload: { kind: 'agentTurn', message, timeoutSeconds: 300 },
+      delivery: { mode: 'announce', channel: 'telegram', to: String(userId) },
+      state: {},
+    };
+
+    if (scheduleKind === 'at') job.schedule = { kind: 'at', at: scheduleValue };
+    else if (scheduleKind === 'every') job.schedule = { kind: 'every', everyMs: scheduleValue };
+    else if (scheduleKind === 'cron') job.schedule = { kind: 'cron', expr: scheduleValue, tz: 'UTC' };
+
+    this.jobs.push(job);
+    this.saveJobs();
+    this.armTimer();
+    return job;
+  }
+
+  listJobs() {
+    return this.jobs.map(j => {
+      const nextRun = this.getNextRunTime(j);
+      const scheduleDesc = j.schedule.kind === 'at' ? `at ${j.schedule.at}`
+        : j.schedule.kind === 'every' ? `every ${j.schedule.everyMs / 60000}min`
+        : j.schedule.kind === 'cron' ? `cron "${j.schedule.expr}"`
+        : 'unknown';
+      return {
+        id: j.id,
+        name: j.name,
+        enabled: j.enabled,
+        schedule: scheduleDesc,
+        nextRun: nextRun ? new Date(nextRun).toISOString() : 'none',
+        lastStatus: j.state?.lastRunStatus || 'never',
+        errors: j.state?.consecutiveErrors || 0,
+      };
+    });
+  }
+
+  toggleJob(id, enabled) {
+    const job = this.jobs.find(j => j.id === id);
+    if (job) {
+      job.enabled = enabled;
+      job.updatedAtMs = Date.now();
+      this.saveJobs();
+      this.armTimer();
+    }
+    return job;
+  }
+
+  deleteJob(id) {
+    const idx = this.jobs.findIndex(j => j.id === id);
+    if (idx >= 0) {
+      this.jobs.splice(idx, 1);
+      this.saveJobs();
+      this.armTimer();
+      return true;
+    }
+    return false;
+  }
+}
+
+const cronManager = new CronManager();
+
+// =============================================================================
 // Telegram Bot
 // =============================================================================
 
@@ -424,6 +788,12 @@ bot.onText(/\/start/, async (msg) => {
 /new — новая сессия
 /sessions — статус сессии
 /ping — проверка связи
+
+*Cron:*
+/cron — список заданий
+/cronadd — создать задание
+/crontoggle — вкл/выкл
+/crondel — удалить
 
 *Поддерживает:*
 📝 Текст — просто напиши сообщение
@@ -494,6 +864,87 @@ bot.onText(/\/sessions?/, async (msg) => {
 bot.onText(/\/ping/, async (msg) => {
   if (!isAllowed(msg.from.id)) return;
   bot.sendMessage(msg.chat.id, '🏓 Pong! Бот и Qoder CLI работают.');
+});
+
+// =============================================================================
+// Cron Commands
+// =============================================================================
+
+bot.onText(/\/cron$/, async (msg) => {
+  if (!isAllowed(msg.from.id)) return;
+  const jobs = cronManager.listJobs();
+  if (jobs.length === 0) {
+    bot.sendMessage(msg.chat.id, '📋 Нет заданий. Используй /cronadd для создания.');
+    return;
+  }
+  let text = '📋 *Cron задания:*\n\n';
+  for (const j of jobs) {
+    const status = j.enabled ? '✅' : '❌';
+    text += `${status} *${j.name}*\n`;
+    text += `  ID: \`${j.id.substring(0, 8)}...\`\n`;
+    text += `  Расписание: ${j.schedule}\n`;
+    text += `  Следующий: ${j.nextRun !== 'none' ? j.nextRun.substring(0, 16) : '—'}\n`;
+    text += `  Последний: ${j.lastStatus} (ошибок: ${j.errors})\n\n`;
+  }
+  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/\/cronadd (.+)/, async (msg, match) => {
+  if (!isAllowed(msg.from.id)) return;
+  // Format: /cronadd name|schedule|message
+  // schedule: at=2026-05-12T10:00:00Z или every=30 или cron=0 9 * * *
+  const parts = match[1].split('|');
+  if (parts.length < 3) {
+    bot.sendMessage(msg.chat.id, '⚠️ Формат: /cronadd name|schedule|message\n\nПримеры:\n/cronadd Напоминание|at=2026-05-12T10:00:00Z|Проверь почту\n/cronadd Новости|every=60|Найди новости\n/cronadd Утро|cron=0 6 * * *|Проверь сервер');
+    return;
+  }
+
+  const name = parts[0].trim();
+  const schedPart = parts[1].trim();
+  const message = parts.slice(2).join('|').trim();
+
+  let kind, value;
+  if (schedPart.startsWith('at=')) {
+    kind = 'at';
+    value = schedPart.substring(3);
+  } else if (schedPart.startsWith('every=')) {
+    kind = 'every';
+    value = parseInt(schedPart.substring(6)) * 60000; // minutes to ms
+  } else if (schedPart.startsWith('cron=')) {
+    kind = 'cron';
+    value = schedPart.substring(5);
+  } else {
+    bot.sendMessage(msg.chat.id, '⚠️ schedule: at=YYYY-MM-DDTHH:MM:SSZ или every=Nmin или cron="0 9 * * *"');
+    return;
+  }
+
+  const job = cronManager.addJob(name, kind, value, message, msg.from.id);
+  bot.sendMessage(msg.chat.id, `✅ Задание создано:\n*${name}*\nID: \`${job.id.substring(0, 12)}\`\nРасписание: ${schedPart}`, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/\/crontoggle (.+)/, async (msg, match) => {
+  if (!isAllowed(msg.from.id)) return;
+  const jobId = match[1].trim();
+  const job = cronManager.jobs.find(j => j.id.startsWith(jobId));
+  if (!job) {
+    bot.sendMessage(msg.chat.id, '⚠️ Задание не найдено');
+    return;
+  }
+  const newState = !job.enabled;
+  cronManager.toggleJob(job.id, newState);
+  bot.sendMessage(msg.chat.id, `${newState ? '✅ Включено' : '❌ Выключено'}: *${job.name}*`, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/\/crondel (.+)/, async (msg, match) => {
+  if (!isAllowed(msg.from.id)) return;
+  const jobId = match[1].trim();
+  const job = cronManager.jobs.find(j => j.id.startsWith(jobId));
+  if (!job) {
+    bot.sendMessage(msg.chat.id, '⚠️ Задание не найдено');
+    return;
+  }
+  cronManager.deleteJob(job.id);
+  bot.sendMessage(msg.chat.id, `🗑 Удалено: *${job.name}*`, { parse_mode: 'Markdown' });
 });
 
 // =============================================================================
@@ -701,3 +1152,6 @@ process.on('unhandledRejection', (reason) => {
 
 console.log('[bridge] Qoder Telegram Bridge v2 started.');
 console.log(`[bridge] Bot: @${config.botToken.split(':')[0]}`);
+
+// Start cron scheduler
+cronManager.start(bot);
