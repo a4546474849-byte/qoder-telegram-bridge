@@ -1,0 +1,30 @@
+# Секреты
+.env
+*.key
+*.pem
+
+# Сессии и данные
+sessions/
+attachments/
+
+# Node modules
+node_modules/
+
+# Логи
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Временные файлы
+*.wav
+*.oga
+*.tmp
